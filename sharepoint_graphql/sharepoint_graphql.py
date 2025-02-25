@@ -50,7 +50,7 @@ class SharePointGraphql:
         self.documents_id = res['id']
 
 
-    def list_files(self, folder_path, next_link=None, files=[]):
+    def list_files(self, folder_path, next_link=None, files=None):
         """
         Lists files within a specific folder on the SharePoint site. (Max 5000 files)
 
@@ -61,6 +61,8 @@ class SharePointGraphql:
             A list of dictionaries representing files, each containing properties like name, id, and downloadUrl.
             An empty list if there are no files or an error occurs.
         """
+        if files is None:
+            files = []
 
         url = f"{GRAPH_URL}drives/{self.documents_id}/root:/{folder_path}:/children"
         headers = {"Authorization": f"Bearer {self.access_token}"}
