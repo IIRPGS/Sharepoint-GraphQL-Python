@@ -4,9 +4,70 @@ import json
 import os
 
 GRAPH_URL = 'https://graph.microsoft.com/v1.0/'
+
+
+class ConnectionError(Exception):
+    """Custom exception for SharePoint GraphQL errors."""
+
+    def __init__(self, message):
+        self.message = message
+        print(f"ConnectionError: {self.message}")
+        raise self
+
+
+class SecurityError(Exception):
+    """Custom exception for SharePoint GraphQL errors."""
+
+    def __init__(self, message):
+        self.message = message
+        print(f"SecurityError: {self.message}")
+        raise self
+
+
+# class ContentError(Exception):
+#     """Custom exception for SharePoint GraphQL errors."""
+#
+#     def __init__(self, message):
+#         self.message = message
+#         print(f"ContentError: {self.message}")
+#         raise self
+
+
+
 class SharePointGraphql:
 
     def __init__(self, site_url, tenant_id, client_id, client_secret):
+        try:
+            self.access_token = self._get_token(client_id, client_secret, tenant_id)
+        except KeyError:
+            raise SecurityError("Access token not found, please check your credentials")
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+
+        self.site_url = self._convert_site_url_to_graph_format(site_url)
+        self.site_id = self._get_site_id(headers, self.site_url)
+        self.documents_id = self._get_document_id(headers)
+
+    def _get_document_id(self, headers):
+        url = f'{GRAPH_URL}sites/{self.site_id}/drive/'
+        res = json.loads(requests.get(url, headers=headers).text)
+
+        if 'error' in res:
+            raise ConnectionError(res['error']['message'])
+        return res['id']
+
+    def _get_site_id(self, headers, site_url):
+        url = f'{GRAPH_URL}sites/{site_url}'
+        res = json.loads(requests.get(url, headers=headers).text)
+        return res['id']
+
+    def _convert_site_url_to_graph_format(self, site_url):
+        if not site_url.startswith("https://"):
+            raise ConnectionError("Invalid URL format. URL must start with 'https://'.")
+        parts = site_url.split("/")
+        graph_url = f"{parts[2]}:/{parts[3]}/{parts[4]}:/"
+        return graph_url
+
+    def _get_token(self, client_id, client_secret, tenant_id):
         """
         Acquire token via MSAL
         """
@@ -17,40 +78,9 @@ class SharePointGraphql:
             client_credential=f'{client_secret}'
         )
         token = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
+        return token['access_token']
 
-        # Check if the URL starts with "https://"
-        if not site_url.startswith("https://"):
-            return None
-
-        # Split the URL into parts
-        parts = site_url.split("/")
-
-        # Rebuild the URL in Graph API format
-        site_url = f"{parts[2]}:/{parts[3]}/{parts[4]}:/"
-        try:
-            self.access_token = token['access_token']
-        except KeyError:
-            print("Error: Access token not found, please check your credentials")
-            return None
-        headers = {"Authorization": f"Bearer {self.access_token}"}
-
-        self.site_url = site_url
-        url = f'{GRAPH_URL}sites/' + site_url
-        res = json.loads(requests.get(url, headers=headers).text)
-        self.site_id = res['id']
-
-        # Get share documents path
-        url = f'{GRAPH_URL}sites/{self.site_id}/drive/'
-        doc_res = json.loads(requests.get(url, headers=headers).text)
-        res = json.loads(requests.get(url, headers=headers).text)
-
-        if 'error' in res:
-            print(f"Error: {res['error']['message']}")
-            return None
-        self.documents_id = res['id']
-
-
-    def list_files(self, folder_path, next_link=None, files=None):
+    def list_files(self, folder_path: str, next_link: str=None, files: list = None):
         """
         Lists files within a specific folder on the SharePoint site. (Max 5000 files)
 
@@ -67,12 +97,11 @@ class SharePointGraphql:
         url = f"{GRAPH_URL}drives/{self.documents_id}/root:/{folder_path}:/children"
         headers = {"Authorization": f"Bearer {self.access_token}"}
 
-        if len(files) > 5000:
-            raise Exception("Too many files (Try to create subfolder)")
-
+        # Why is this check here? Maybe because of the limitation of recursive function?
+        # if len(files) > 5000:
+        #     raise Exception("Too many files (Try to create subfolder)")
         try:
             if next_link is not None:
-                #Replace url with next link
                 url = next_link
             response = requests.get(url, headers=headers)
             response.raise_for_status()  # Raise exception for non-200 status codes
@@ -86,6 +115,44 @@ class SharePointGraphql:
         except requests.exceptions.RequestException as e:
             print(f"Error listing files: {e}")
             return []
+
+    def list_files_non_recursive(self, folder_path: str):
+        """
+        Lists files in a specified folder non-recursively using Microsoft Graph API.
+
+        This method retrieves the list of files and folders within the specified
+        folder path without exploring subfolders. It uses pagination to handle
+        responses that exceed the default limit and combines all the paginated
+        results into a single list for the caller. The function requires a valid
+        Microsoft Graph API access token to authenticate and access the desired
+        folder.
+
+        :param folder_path: The path of the folder whose files are to be listed
+            non-recursively.
+        :type folder_path: str
+        :return: A list of dictionaries containing metadata of files and folders
+            within the specified folder path.
+        :rtype: list
+        :raises ConnectionError: If there is an issue with the HTTP request, such as
+            network problems or invalid API response.
+        """
+        url = f"{GRAPH_URL}drives/{self.documents_id}/root:/{folder_path}:/children"
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        files = []
+        while True:
+            try:
+                response = requests.get(url, headers=headers)
+                response.raise_for_status()  # Raise exception for non-200 status codes
+            except requests.exceptions.RequestException as e:
+                raise ConnectionError(f"Error listing files: {e}")
+
+            data = response.json()
+            files.append(data.get("value", []))
+            if '@odata.nextLink' in data:
+                url = data['@odata.nextLink']
+            else:
+                break
+        return files
 
     def download_file_by_relative_path(self, remote_path, local_path):
         """
