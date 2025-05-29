@@ -1,76 +1,102 @@
+from os import PathLike
+from io import StringIO
+from typing import Iterator
+from urllib.parse import urlparse
+
 import requests
 import msal
 import json
 import os
 
-GRAPH_URL = 'https://graph.microsoft.com/v1.0/'
-
 
 class ConnectionError(Exception):
-    """Custom exception for SharePoint GraphQL errors."""
-
     def __init__(self, message):
-        self.message = message
-        print(f"ConnectionError: {self.message}")
-        raise self
+        super().__init__(message)
+        print(f"ConnectionError: {message}")
 
 
 class SecurityError(Exception):
-    """Custom exception for SharePoint GraphQL errors."""
-
     def __init__(self, message):
-        self.message = message
-        print(f"SecurityError: {self.message}")
-        raise self
+        super().__init__(message)
+        print(f"SecurityError: {message}")
 
 
-# class ContentError(Exception):
-#     """Custom exception for SharePoint GraphQL errors."""
-#
-#     def __init__(self, message):
-#         self.message = message
-#         print(f"ContentError: {self.message}")
-#         raise self
-
+class TransactionError(Exception):
+    def __init__(self, message):
+        super().__init__(message)
+        print(f"TransactionError: {message}")
 
 
 class SharePointGraphql:
+    """
+    Handles interaction with the SharePoint site using Microsoft Graph API.
+
+    The `SharePointGraphql` class simplifies actions like retrieving metadata,
+    uploading files, moving files, deleting files, and downloading files through
+    direct API calls to Microsoft Graph. It includes methods for authenticating
+    and setting up the connection with SharePoint, and utility methods for
+    managing file and folder operations.
+
+    :ivar access_token: Authentication token for connecting to the Microsoft Graph API.
+    :type access_token: str
+    :ivar site_url: The SharePoint site base URL in Graph API format.
+    :type site_url: str
+    :ivar site_id: The unique identifier of the SharePoint site.
+    :type site_id: str
+    :ivar documents_id: The unique identifier of the "Documents" repository in the SharePoint site.
+    :type documents_id: str
+    """
+    DOWNLOAD_URL_KEY = '@microsoft.graph.downloadUrl'
+    GRAPH_BASE_URL = 'https://graph.microsoft.com/v1.0'
 
     def __init__(self, site_url, tenant_id, client_id, client_secret):
         try:
             self.access_token = self._get_token(client_id, client_secret, tenant_id)
         except KeyError:
             raise SecurityError("Access token not found, please check your credentials")
-        headers = {"Authorization": f"Bearer {self.access_token}"}
+        self.headers = {"Authorization": f"Bearer {self.access_token}"}
 
         self.site_url = self._convert_site_url_to_graph_format(site_url)
-        self.site_id = self._get_site_id(headers, self.site_url)
-        self.documents_id = self._get_document_id(headers)
+        self.site_id = self._get_site_id(self.headers, self.site_url)
+        self.documents_id = self._get_document_id(self.headers)
 
     def _get_document_id(self, headers):
-        url = f'{GRAPH_URL}sites/{self.site_id}/drive/'
-        res = json.loads(requests.get(url, headers=headers).text)
+        url = f'{self.GRAPH_BASE_URL}/sites/{self.site_id}/drive/'
+        res = requests.get(url, headers=headers).json()
 
         if 'error' in res:
             raise ConnectionError(res['error']['message'])
         return res['id']
 
     def _get_site_id(self, headers, site_url):
-        url = f'{GRAPH_URL}sites/{site_url}'
-        res = json.loads(requests.get(url, headers=headers).text)
+        url = f'{self.GRAPH_BASE_URL}/sites/{site_url}'
+        res = requests.get(url, headers=headers).json()
         return res['id']
 
-    def _convert_site_url_to_graph_format(self, site_url):
+    @staticmethod
+    def _convert_site_url_to_graph_format(site_url):
         if not site_url.startswith("https://"):
             raise ConnectionError("Invalid URL format. URL must start with 'https://'.")
         parts = site_url.split("/")
         graph_url = f"{parts[2]}:/{parts[3]}/{parts[4]}:/"
         return graph_url
 
+    def _build_graph_url(self, remote_path: str, action: str = "") -> str:
+        """
+        Constructs a Microsoft Graph API URL for a given remote path and action.
+
+        :param remote_path: The relative path of the file or folder in SharePoint.
+        :param action: The action to perform (e.g., 'content' for upload/download).
+        :return: A formatted URL string.
+        """
+        remote_path = remote_path.strip("/")
+        if action == 'content':
+            url = f"{self.GRAPH_BASE_URL}/sites/{self.site_id}/drive/root:/{remote_path}:/{action}"
+        else:
+            url = f"{self.GRAPH_BASE_URL}/sites/{self.site_id}/drive/root:/{remote_path}"
+        return url
+
     def _get_token(self, client_id, client_secret, tenant_id):
-        """
-        Acquire token via MSAL
-        """
         authority_url = f'https://login.microsoftonline.com/{tenant_id}'
         app = msal.ConfidentialClientApplication(
             authority=authority_url,
@@ -80,155 +106,88 @@ class SharePointGraphql:
         token = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
         return token['access_token']
 
-    def list_files(self, folder_path: str, next_link: str=None, files: list = None):
+    def list_files(self, folder_path: str):
         """
-        Lists files within a specific folder on the SharePoint site. (Max 5000 files)
+        Retrieves a list of files from a specified folder in a OneDrive account, using the
+        Microsoft Graph API.
 
-        Args:
-            folder_path: The server-relative path of the folder (e.g., "/sites/your-site/Shared Documents/subfolder").
+        The function sends HTTP GET requests to fetch file metadata collection in the
+        provided folder path. Results are paginated through the Graph API `@odata.nextLink`
+        property, and the function iterates until all pages have been processed.
 
-        Returns:
-            A list of dictionaries representing files, each containing properties like name, id, and downloadUrl.
-            An empty list if there are no files or an error occurs.
-        """
-        if files is None:
-            files = []
-
-        url = f"{GRAPH_URL}drives/{self.documents_id}/root:/{folder_path}:/children"
-        headers = {"Authorization": f"Bearer {self.access_token}"}
-
-        # Why is this check here? Maybe because of the limitation of recursive function?
-        # if len(files) > 5000:
-        #     raise Exception("Too many files (Try to create subfolder)")
-        try:
-            if next_link is not None:
-                url = next_link
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()  # Raise exception for non-200 status codes
-            data = response.json()
-            files += data.get("value", [])
-            if '@odata.nextLink' in data:
-                next_link = data['@odata.nextLink']
-                return self.list_files(folder_path=folder_path, next_link=next_link, files=files)
-
-            return files  # Extract "value" array containing files
-        except requests.exceptions.RequestException as e:
-            print(f"Error listing files: {e}")
-            return []
-
-    def list_files_non_recursive(self, folder_path: str):
-        """
-        Lists files in a specified folder non-recursively using Microsoft Graph API.
-
-        This method retrieves the list of files and folders within the specified
-        folder path without exploring subfolders. It uses pagination to handle
-        responses that exceed the default limit and combines all the paginated
-        results into a single list for the caller. The function requires a valid
-        Microsoft Graph API access token to authenticate and access the desired
-        folder.
-
-        :param folder_path: The path of the folder whose files are to be listed
-            non-recursively.
+        :param folder_path: The folder path in the OneDrive structure from which the files
+            need to be listed.
         :type folder_path: str
-        :return: A list of dictionaries containing metadata of files and folders
-            within the specified folder path.
+        :return: A list containing metadata of files from the folder. Each file's data is
+            represented as a dictionary.
         :rtype: list
-        :raises ConnectionError: If there is an issue with the HTTP request, such as
-            network problems or invalid API response.
+        :raises HTTPError: If there is a networking issue or the API request fails.
+        :raises JSONDecodeError: If the API returns invalid JSON in the body.
         """
-        url = f"{GRAPH_URL}drives/{self.documents_id}/root:/{folder_path}:/children"
-        headers = {"Authorization": f"Bearer {self.access_token}"}
+        folder_path = folder_path.strip("/")
+
+        url = f"{self.GRAPH_BASE_URL}/drives/{self.documents_id}/root:/{folder_path}:/children"
         files = []
         while True:
-            try:
-                response = requests.get(url, headers=headers)
-                response.raise_for_status()  # Raise exception for non-200 status codes
-            except requests.exceptions.RequestException as e:
-                raise ConnectionError(f"Error listing files: {e}")
+            response = requests.get(url, headers=self.headers)
+            response.raise_for_status()  # Raise exception for non-200 status codes
 
             data = response.json()
-            files.append(data.get("value", []))
+            files.extend(data.get("value", []))
             if '@odata.nextLink' in data:
                 url = data['@odata.nextLink']
             else:
                 break
         return files
 
-    def download_file_by_relative_path(self, remote_path, local_path):
-        """
-        Downloads a file by its relative path from the SharePoint site.
-
-        Args:
-            remote_path: The file path of the file to download. (Relative path start after Documents)
-            local_path: The file path of the destination your will save
-
-        Returns:
-            True if download file successful, False otherwise.
-        """
-
-        url = f"{GRAPH_URL}/sites/{self.site_id}/drive/root:/{remote_path}"
-
-        headers = {"Authorization": f"Bearer {self.access_token}"}
-
-        try:
-            response = requests.get(url, headers=headers, stream=True)
-            response.raise_for_status()
-            data = response.json()
-
-            return self.download_file(data['@microsoft.graph.downloadUrl'], local_path)
-        except (requests.exceptions.RequestException, KeyError) as e:
-            print(f"Error downloading file: {e}")
-            return False
-
     def upload_file_by_relative_path(self, remote_path, local_path):
         """
-        Upload a file by its relative path from the SharePoint site.
+        Uploads a file to a remote location specified by its relative path. The
+        file content is read from the local file system and then uploaded to the
+        remote server using an HTTP PUT request.
 
-        Args:
-            remote_path: The file path of the file to upload. (Relative path start after Documents)
-            local_path: The file path of the local file
+        The method constructs the URL based on the provided remote path and uses
+        the configured headers to authenticate the request.
 
-        Returns:
-            True if upload file successful, False otherwise.
+        :param remote_path: Relative path on the remote server where the file
+            will be uploaded. Include the file name and extension.
+        :type remote_path: str
+        :param local_path: Absolute or relative path of the local file that
+            needs to be uploaded.
+        :type local_path: str
+        :return: None
         """
-
-        url = f"{GRAPH_URL}/sites/{self.site_id}/drive/root:/{remote_path}:/content"
-
-        headers = {"Authorization": f"Bearer {self.access_token}"}
-
-        try:
-            with open(local_path, "rb") as f:
-                response = requests.put(url, headers=headers, stream=True, data=f.read())
-            response.raise_for_status()
-            data = response.json()
-
-            return True
-        except (requests.exceptions.RequestException, KeyError, OSError) as e:
-            print(f"Error Uploading file: {e}")
-            return False
+        with open(local_path, "rb") as f:
+            url = self._build_graph_url(remote_path, "content")
+            response = requests.put(url, headers=self.headers, stream=True, data=f.read())
+        response.raise_for_status()
 
     def move_file(self, remote_src_path, remote_des_path):
         """
-        Move a file by its source path to the destination from the SharePoint site.
+        Moves a file from a source location to a destination location on a remote server.
+        This method constructs a payload for the destination path, executes a move request
+        to transfer the file, and raises an error if issues occur during the process.
 
-        Args:
-            remote_src_path: The remote file path of the source file
-            remote_des_path: The remote file path of the destination file
-
-        Returns:
-            True if move file successful, False otherwise.
+        :param remote_src_path: The path to the file on the remote server to be moved.
+        :type remote_src_path: str
+        :param remote_des_path: The new destination path for the file on the remote server.
+        :type remote_des_path: str
+        :return: None
+        :rtype: None
+        :raises TransactionError: If an HTTP error occurs during the file move operation.
         """
+        payload = self._build_move_destination_payload(remote_des_path)
 
+        try:
+            self._execute_move_request(payload, remote_src_path)
+        except requests.exceptions.HTTPError as e:
+            raise TransactionError(f"Error moving file: {e}")
+
+    def _build_move_destination_payload(self, remote_des_path):
         new_filename = os.path.basename(remote_des_path)
         path = os.path.dirname(remote_des_path)
-
         # Construct the path reference
         path_reference = f"drives/{self.documents_id}/root:/{path}"
-
-        url = f"{GRAPH_URL}/sites/{self.site_id}/drive/root:/{remote_src_path}"
-
-        headers = {"Authorization": f"Bearer {self.access_token}"}
-
         # Payload for the move request
         payload = {
             "parentReference": {
@@ -236,83 +195,156 @@ class SharePointGraphql:
             },
             "name": new_filename
         }
+        return payload
+
+    def _execute_move_request(self, payload, remote_src_path):
+        response = requests.patch(self._build_graph_url(remote_src_path), headers=self.headers, stream=True,
+                                  json=payload)
+        response.raise_for_status()
+
+    def delete_file_by_relative_path(self, remote_path: str):
+        """
+        Deletes a file from the SharePoint site by its relative path.
+
+        This method sends a DELETE request to the Microsoft Graph API to remove the specified file.
+
+        :param remote_path: The relative path of the file to be deleted on the SharePoint site.
+        :type remote_path: str
+        :raises TransactionError: If the API request fails or returns an error.
+        :return: None
+        """
 
         try:
-            response = requests.patch(url, headers=headers, stream=True, json=payload)
+            response = requests.delete(self._build_graph_url(remote_path), headers=self.headers)
             response.raise_for_status()
-            data = response.json()
+        except requests.exceptions.HTTPError as e:
+            raise TransactionError(f"Error deleting file: {e}")
 
-            return True
-        except (requests.exceptions.RequestException, KeyError) as e:
-            print(f"Error downloading file: {e}")
-            return None
+    @staticmethod
+    def _setup_local_directory(output_path: os.PathLike) -> PathLike:
+        output_path = SharePointGraphql._resolve_absolute_path(output_path)
+        SharePointGraphql._ensure_directory_exists(output_path)
+        return output_path
 
-    def delete_file_by_relative_path(self, remote_path):
-        """
-        Delete a file by its relative path from the SharePoint site.
-
-        Args:
-            remote_path: The file path of the file to delete. (Relative path start after Documents)
-
-        Returns:
-            True if delete file successful, False otherwise.
-        """
-
-        url = f"{GRAPH_URL}/sites/{self.site_id}/drive/root:/{remote_path}"
-
-        headers = {"Authorization": f"Bearer {self.access_token}"}
-
-        try:
-            response = requests.delete(url, headers=headers, stream=True)
-            response.raise_for_status()
-
-            return True
-        except (requests.exceptions.RequestException, KeyError, OSError) as e:
-            print(f"Error deleteing file: {e}")
-            return False
-
-    def download_file(self, url, output_path):
-        """
-        Downloads a file from a URL and saves it to the specified path.
-
-        Args:
-            url (str): The absolute URL of the file to download.
-            output_path (str): The absolute path where the file will be saved.
-
-        Returns:
-            file: The file object of the downloaded file,
-                or None if there was an error.
-
-        Raises:
-            OSError: If there's an issue creating the output directory or file.
-            requests.exceptions.RequestException: If there's an error downloading the file.
-        """
-
-        # Get absolute path based on current working directory (for relative paths)
+    @staticmethod
+    def _resolve_absolute_path(output_path: os.PathLike) -> os.PathLike:
         if not os.path.isabs(output_path):
             output_path = os.path.join(os.getcwd(), output_path)
+        return output_path
 
-        # Check if output directory exists, create it if necessary
+    @staticmethod
+    def _ensure_directory_exists(output_path: os.PathLike):
         output_dir = os.path.dirname(output_path)
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
-        # Get the filename from the URL (consider using a library for robust extraction)
-        filename = os.path.basename(url)
+    def download_file(self, url: str, output_path: os.PathLike):
+        """
+        Downloads a file from a specified URL and saves it to the given path.
 
-        # Download the file using requests
+        This function retrieves the file from the specified URL and writes it to a local
+        path. A directory is setup or verified before storing the file. The function streams
+        the data in chunks to handle large files efficiently.
+
+        :param url: The URL of the file to download.
+        :type url: str
+        :param output_path: The destination local path to save the downloaded file. This can
+                           be a file path string or any object implementing os.PathLike.
+        :type output_path: os.PathLike
+        :return: None
+        :rtype: None
+        :raises TransactionError: If there is an HTTP error during the file download.
+        """
         try:
             response = requests.get(url, stream=True)
             response.raise_for_status()  # Raise an exception for non-2xx status codes
+        except requests.exceptions.HTTPError as e:
+            raise TransactionError(f"Error downloading file: {e}")
 
-            # Open the output file in binary write mode
-            with open(output_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=1024):
-                    if chunk:  # filter out keep-alive new chunks
-                        f.write(chunk)
+        with open(self._setup_local_directory(output_path), "wb") as f:
+            for chunk in response.iter_content(chunk_size=1024):
+                if chunk:
+                    f.write(chunk)
 
-            return True  # Return the opened file object
-
-        except (OSError, requests.exceptions.RequestException) as e:
-            print(f"Error downloading file: {e}")
+    def is_valid_url(self, url: str) -> bool:
+        """
+        Validate if the URL is well-formed and belongs to the trusted domain.
+        :param url: URL to validate.
+        :param trusted_domain: Trusted domain to check against.
+        :return: True if URL is valid and belongs to the trusted domain, False otherwise.
+        """
+        trusted_domain = "sharepoint.com"
+        try:
+            parsed_url = urlparse(url)
+            return parsed_url.scheme in ["http", "https"] and parsed_url.netloc.endswith(
+                trusted_domain
+            )
+        except Exception:
             return False
+
+    def download_filestream(self, remote_file_path: str) -> StringIO:
+        """
+        Downloads a file from a specified URL and returns the response object.
+
+        :param remote_file_path: The file path of the file to download.
+        :type remote_file_path: str
+        :return: A file object if download is successful.
+        :rtype: StringIO
+        :raises TransactionError: If there is an issue with the HTTP request.
+        """
+        url = self._build_graph_url(remote_file_path)
+        download_url = self._get_download_url(url)
+        return self._download_to_stream(download_url)
+
+    def _get_download_url(self, url: str) -> str:
+        try:
+            response = self._retry_request("GET", url, headers=self.headers)
+            response_data = response.json()
+            download_url = response_data[self.DOWNLOAD_URL_KEY]
+            if not self.is_valid_url(download_url):
+                raise TransactionError(f"Invalid download URL: {download_url}")
+            return download_url
+        except requests.exceptions.RequestException as e:
+            raise TransactionError(f"Error retrieving file metadata: {e}")
+
+    def _download_to_stream(self, download_url: str) -> StringIO:
+        try:
+            response = self._retry_request("GET", download_url, stream=True)
+            file_stream = StringIO()
+            file_stream.write(response.content.decode("utf-8"))
+            file_stream.seek(0)
+            return file_stream
+        except requests.exceptions.RequestException as e:
+            raise TransactionError(f"Error downloading file: {e}")
+
+    def _retry_request(self, method: str, url: str, **kwargs) -> requests.Response:
+        for _ in range(3):  # Retry up to 3 times
+            response = requests.request(method, url, **kwargs)
+            if response.status_code < 500:  # Retry only for server errors
+                return response
+            time.sleep(5)  # Delay between retries
+        response.raise_for_status()
+
+    def download_file_by_relative_path(self, remote_path: str, local_path: os.PathLike):
+        """
+            Downloads a file from the SharePoint site by its relative path.
+
+            This method retrieves the file's download URL using the Microsoft Graph API
+            and then downloads the file to the specified local path.
+
+            Args:
+                remote_path: The relative path of the file on the SharePoint site.
+                local_path: The local file path where the downloaded file should be saved.
+
+            Raises:
+                KeyError: If the download URL is not found in the API response.
+                requests.exceptions.RequestException: If there is an issue with the HTTP request.
+        """
+
+        response = requests.get(self._build_graph_url(remote_path), headers=self.headers)
+        response.raise_for_status()
+        data = response.json()
+
+        if self.DOWNLOAD_URL_KEY not in data:
+            raise KeyError("Download URL not found in response")
+        self.download_file(data[self.DOWNLOAD_URL_KEY], local_path)
