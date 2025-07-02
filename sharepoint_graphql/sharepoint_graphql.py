@@ -1,3 +1,4 @@
+import time
 from os import PathLike
 from io import StringIO
 from typing import Iterator
