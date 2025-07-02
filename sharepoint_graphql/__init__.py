@@ -1,1 +1,1 @@
-from .sharepoint_graphql import SharePointGraphql,ConnectionError, SecurityError, TransactionError
+from .sharepoint_graphql import SharePointGraphql, ConnectionError, SecurityError, TransactionError
