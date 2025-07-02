@@ -1,13 +1,11 @@
+import os
 import time
-from os import PathLike
 from io import StringIO
-from typing import Iterator
+from os import PathLike
 from urllib.parse import urlparse
 
-import requests
 import msal
-import json
-import os
+import requests
 
 
 class ConnectionError(Exception):

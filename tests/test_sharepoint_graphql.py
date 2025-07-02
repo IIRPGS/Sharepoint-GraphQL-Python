@@ -7,8 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 import requests
 
-import SharePointGraphql
-from sharepoint_graphql import ConnectionError, TransactionError
+from sharepoint_graphql import ConnectionError, TransactionError, SharePointGraphql
 from sharepoint_graphql.sharepoint_graphql import SecurityError
 
 
@@ -102,6 +101,7 @@ def mock_object_for_testing_site_id(mock_client, monkeypatch):
     mock_response = {
         "id": "mock_site_id"
     }
+
     def mock_get(url, headers):
         print(f"Mocked GET request to URL: {url} with headers: {headers}")
         return MockResponse(mock_response, 200)
@@ -110,7 +110,6 @@ def mock_object_for_testing_site_id(mock_client, monkeypatch):
 
     sharepoint_graphql = SharePointGraphql(**mock_client)
     return sharepoint_graphql
-
 
 
 @pytest.fixture
@@ -141,7 +140,7 @@ def mock_object_for_testing_document_id(mock_client, monkeypatch):
 
 @pytest.fixture
 def mock_object_for_testing_token(mock_client, monkeypatch):
-    mock_token = "mock_access_token"
+    # mock_token = "mock_access_token"
     mock_site_url = "mock_graph_site_url"
     mock_site_id = "mock_site_id"
     mock_documents_id = "mock_documents_id"
@@ -190,7 +189,7 @@ def test_securityerror_handling(mock_error_message):
 
 def test_sharepoint_graphql_instantiation_with_invalid_mocked_token(mock_client, monkeypatch):
     # Arrange
-    mock_token = "mock_access_token"
+    # mock_token = "mock_access_token"
 
     def mock_get_token(self, client_id, client_secret, tenant_id):
         raise KeyError("Access token not found, please check your credentials")
@@ -246,7 +245,7 @@ def test_sharepoint_graphql__convert_site_url_to_graph_format_failure(mock_objec
     assigned_site_url = "http://mycompany.sharepoint.com/sites/warehouse"
 
     # Act & Assert
-    with pytest.raises(ConnectionError, match="Invalid URL format. URL must start with 'https://'.") as exc_info:
+    with pytest.raises(ConnectionError, match="Invalid URL format. URL must start with 'https://'."):
         mock_object._convert_site_url_to_graph_format(assigned_site_url)
 
 
@@ -330,7 +329,7 @@ def test_sharepointgraphql_list_files_success(mock_object, monkeypatch):
     }
 
     def mock_get(url, headers):
-        if url == f"https://graph.microsoft.com/v1.0/drives/mock_documents_id/root:/Documents/Folder:/children":
+        if url == "https://graph.microsoft.com/v1.0/drives/mock_documents_id/root:/Documents/Folder:/children":
             return MockResponse(first_response, 200)
         elif url == "https://graph.microsoft.com/v1.0/nextPage":
             return MockResponse(second_response, 200)
@@ -556,7 +555,7 @@ def test_sharepointgraphql_download_file_by_relative_path_success(mock_object, m
     monkeypatch.setattr(mock_object, "download_file", mock_download_file)
 
     # Act
-    result = mock_object.download_file_by_relative_path(remote_path, local_path)
+    mock_object.download_file_by_relative_path(remote_path, local_path)
 
     # Assert
     assert download_file_called
