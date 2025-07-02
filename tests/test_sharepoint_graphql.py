@@ -392,7 +392,7 @@ def test_sharepointgraphql__resolve_absolute_path(mock_object, monkeypatch):
 
     # Assert
     assert test_path_full == expected_path_full_path
-    assert test_path_partial == expected_path_full_path
+    assert test_path_partial == str(expected_path_full_path)
 
 
 def test_sharepointgraphql_ensure_directory_exists(mock_object, monkeypatch, capsys):
