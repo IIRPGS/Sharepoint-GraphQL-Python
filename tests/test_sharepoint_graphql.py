@@ -2,13 +2,11 @@ import json
 import os
 import pathlib
 from io import TextIOWrapper
-
-import pytest
 from unittest.mock import MagicMock
 
+import pytest
 import requests
 
-import sharepoint_graphql.sharepoint_graphql
 from sharepoint_graphql import SharePointGraphql, ConnectionError, TransactionError
 from sharepoint_graphql.sharepoint_graphql import SecurityError
 
