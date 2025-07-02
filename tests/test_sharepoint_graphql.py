@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 import requests
 
-from sharepoint_graphql.sharepoint_graphql import SecurityError, ConnectionError, TransactionError, SharePointGraphql
+from sharepoint_graphql import SecurityError, ConnectionError, TransactionError, SharePointGraphql
 
 
 class MockResponse:
